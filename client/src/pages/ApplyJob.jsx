@@ -92,7 +92,7 @@ export default function ApplyJob() {
         advice: data.advice,
         missingSkills: data.missingSkills || [],
         resumeSuggestions: data.resumeSuggestions || [],
-        resources: data.resources || [],
+        resources: [],
         fitAnalysis: data.fitAnalysis || {},
         blocked: data.blocked,
       });
