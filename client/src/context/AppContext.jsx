@@ -6,7 +6,7 @@ import { useAuth, useUser } from "@clerk/clerk-react";
 export const AppContext = createContext();
 
 export const AppContextProvider = (props) => {
-  const backendUrl = https://smartapply-ai-backend.onrender.com;
+  const backendUrl = "https://smartapply-ai-backend.onrender.com";
   //   console.log("Backend URL: ", backendUrl);
 
   const { user } = useUser();
