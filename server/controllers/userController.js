@@ -112,7 +112,7 @@ export const applyForJob = async (req, res) => {
       fit_analysis: { summary: "", strengths: [], weaknesses: [] },
     };
     try {
-      const { data } = await axios.post("http://localhost:8000/api/match/", {
+      const { data } = await axios.post("https://nitintak13--smartapply-backend-serve-dev.modal.run/api/match/", {
         resume_text: user.resumeText || "",
         jd_text: job.description || "",
       });
