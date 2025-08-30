@@ -2,13 +2,47 @@ import { groqLLM } from "../clients/groq_llm.js";
 import { htmlToText } from "../utils/htmlToText.js";
 import { extractJson, normalizeResources } from "../utils/json_utils.js";
 import { addToVectorStore, getRetriever } from "../rag/vector_store.js";
-import { createRetrievalChain } from "langchain/chains/retrieval";
-import { createStuffDocumentsChain } from "langchain/chains/combine_documents";
 import { AIMessage } from "@langchain/core/messages";
 
-function generatePrompt(resumeText, jdText) {
+function generatePrompt(jdText, skillsSummary = [], retrievedChunks = []) {
+  const retrievedSummary = retrievedChunks.length
+    ? `---RETRIEVED RESUME CONTEXT---\n${retrievedChunks
+        .map((d, i) => `(${i + 1}) ${d.pageContent}`)
+        .join("\n\n")}`
+    : "";
+
+  const skillsBlock = skillsSummary.length
+    ? `---CANDIDATE SKILLS SUMMARY---\n${skillsSummary.join(", ")}`
+    : "";
+
   return `
-You are a FAANG-level recruiter with 10+ years of experience, extremely strict when evaluating resumes against job descriptions. Provide objective, experience-backed feedback.
+You are a FAANG-level recruiter with 10+ years of experience. 
+Evaluate the resume against the job description. Be very strict, 
+do not inflate scores, and justify your reasoning.
+
+Return ONLY a raw JSON object with keys:
+- score (0–100)  
+- advice         
+- fit_analysis: {summary, strengths, weaknesses}
+- missing_skills 
+- resume_suggestions 
+- resources (list of {title, url})
+
+---JOB DESCRIPTION---
+${jdText}
+
+${skillsBlock}
+
+${retrievedSummary}
+`;
+}
+
+
+async function directPrompt(resumeText, jdText) {
+  const llm = groqLLM();
+  const prompt = `
+You are a FAANG-level recruiter with 10+ years of experience. 
+Evaluate the resume against the job description strictly.
 
 Return ONLY a raw JSON object with keys:
 - score (0–100)
@@ -22,12 +56,9 @@ Return ONLY a raw JSON object with keys:
 ${resumeText}
 
 ---JOB DESCRIPTION---
-${jdText}`;
-}
+${jdText}
+`;
 
-async function directPrompt(resumeText, jdText) {
-  const prompt = generatePrompt(resumeText, jdText);
-  const llm = groqLLM();
   const output = await llm.invoke(prompt);
 
   const rawOutput =
@@ -42,6 +73,7 @@ async function directPrompt(resumeText, jdText) {
   throw new Error("Failed to parse LLM output from direct prompt");
 }
 
+
 export async function matchResumeToJD(resumeText, jdText, namespace) {
   const resumePlain = htmlToText(resumeText);
   const jdPlain = htmlToText(jdText);
@@ -49,43 +81,50 @@ export async function matchResumeToJD(resumeText, jdText, namespace) {
   const docId = `session-${namespace}`;
 
   await addToVectorStore(`${docId}-resume`, resumePlain, namespace);
-
   await addToVectorStore(`${docId}-jd`, jdPlain, namespace);
 
   const retriever = await getRetriever(namespace);
 
   const queryText = jdPlain.split("\n", 1)[0].slice(0, 200);
 
-  const retrievedDocs = await retriever.invoke(queryText);
-
-  if (!retrievedDocs.length) {
-    return await directPrompt(resumePlain, jdPlain);
+  let retrievedDocs = [];
+  try {
+    retrievedDocs = await retriever.invoke(queryText);
+  } catch {
   }
 
   try {
     const llm = groqLLM();
 
-    const combineDocsChain = await createStuffDocumentsChain({ llm });
+    const skillPrompt = `
+Extract a flat list of candidate skills from the resume:
+${resumePlain}
+Return JSON array only, e.g. ["Python", "Node.js", "MongoDB"]
+    `;
+    const skillsResp = await llm.invoke(skillPrompt);
+    let skillsSummary = [];
+    try {
+      skillsSummary = JSON.parse(
+        skillsResp instanceof AIMessage
+          ? skillsResp.content
+          : String(skillsResp)
+      );
+    } catch {
+      skillsSummary = [];
+    }
 
-    const chain = await createRetrievalChain({
-      retriever,
-      combineDocsChain,
-    });
-
-    const result = await chain.invoke({
-      input: generatePrompt(resumePlain, jdPlain),
-    });
+    const prompt = generatePrompt(jdPlain, skillsSummary, retrievedDocs);
+    const output = await llm.invoke(prompt);
 
     const rawOutput =
-      result?.answer ||
-      result?.output_text ||
-      (result instanceof AIMessage ? result.content : String(result));
+      output instanceof AIMessage ? output.content : String(output);
 
     const parsed = extractJson(rawOutput);
     if (parsed) {
       parsed.resources = normalizeResources(parsed.resources || []);
       return parsed;
     }
+
     return await directPrompt(resumePlain, jdPlain);
   } catch (err) {
     return await directPrompt(resumePlain, jdPlain);
